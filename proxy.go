@@ -95,8 +95,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		p.mu.Lock()
 		p.running = true
-		p.lastReq = time.Now()
 		p.mu.Unlock()
+
+		log.Println("waiting for llama-server to be ready...")
+		select {
+		case <-p.proc.Ready():
+			log.Println("llama-server is ready")
+		case <-time.After(60 * time.Second):
+			http.Error(w, "llama-server timed out waiting to be ready", http.StatusGatewayTimeout)
+			return
+		}
 	}
 
 	p.mu.Lock()
@@ -155,6 +163,8 @@ func (p *Proxy) checkTTL() {
 		if err := p.proc.Stop(); err != nil {
 			log.Printf("error stopping llama-server: %v", err)
 		}
+
+		p.proc.ResetForRestart()
 	}
 }
 

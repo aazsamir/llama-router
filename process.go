@@ -22,6 +22,12 @@ type ProcessManager struct {
 	basePort int
 	// Preset file path
 	presetPath string
+	// readyCh is closed when llama-server becomes ready
+	readyCh chan struct{}
+	// startOnce ensures only one Start call is effective
+	startOnce sync.Once
+	// closingCh is closed when the process is shutting down
+	closingCh chan struct{}
 }
 
 func NewProcessManager(llamaServerPath string, presetPath string, basePort int) *ProcessManager {
@@ -29,6 +35,8 @@ func NewProcessManager(llamaServerPath string, presetPath string, basePort int) 
 		llamaServerPath: llamaServerPath,
 		presetPath:      presetPath,
 		basePort:        basePort,
+		readyCh:         make(chan struct{}),
+		closingCh:       make(chan struct{}),
 	}
 }
 
@@ -45,41 +53,56 @@ func (pm *ProcessManager) WrapperAddr() string {
 }
 
 func (pm *ProcessManager) Start() error {
+	var startErr error
+	pm.startOnce.Do(func() {
+		pm.mu.Lock()
+		defer pm.mu.Unlock()
+
+		// Check if already running
+		if atomic.LoadInt32(&pm.pid) != 0 {
+			log.Println("llama-server already running")
+			return
+		}
+
+		port := pm.backendPort()
+		args := []string{
+			"--models-max", "1",
+			"--models-preset", pm.presetPath,
+			"--host", "127.0.0.1",
+			"--port", fmt.Sprintf("%d", port),
+			"-np", "1",
+		}
+
+		log.Printf("starting llama-server: %s %v", pm.llamaServerPath, args)
+
+		pm.cmd = exec.Command(pm.llamaServerPath, args...)
+		pm.cmd.Stdout = os.Stdout
+		pm.cmd.Stderr = os.Stderr
+
+		if err := pm.cmd.Start(); err != nil {
+			startErr = fmt.Errorf("start llama-server: %w", err)
+			return
+		}
+
+		atomic.StoreInt32(&pm.pid, int32(pm.cmd.Process.Pid))
+		log.Printf("llama-server started with PID %d on port %d", pm.cmd.Process.Pid, port)
+
+		// Wait for server to be ready
+		go pm.waitForReady()
+	})
+
+	return startErr
+}
+
+func (pm *ProcessManager) ResetForRestart() {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	// Check if already running
-	if atomic.LoadInt32(&pm.pid) != 0 {
-		log.Println("llama-server already running")
-		return nil
-	}
-
-	port := pm.backendPort()
-	args := []string{
-		"--models-max", "1",
-		"--models-preset", pm.presetPath,
-		"--host", "127.0.0.1",
-		"--port", fmt.Sprintf("%d", port),
-		"-np", "1",
-	}
-
-	log.Printf("starting llama-server: %s %v", pm.llamaServerPath, args)
-
-	pm.cmd = exec.Command(pm.llamaServerPath, args...)
-	pm.cmd.Stdout = os.Stdout
-	pm.cmd.Stderr = os.Stderr
-
-	if err := pm.cmd.Start(); err != nil {
-		return fmt.Errorf("start llama-server: %w", err)
-	}
-
-	atomic.StoreInt32(&pm.pid, int32(pm.cmd.Process.Pid))
-	log.Printf("llama-server started with PID %d on port %d", pm.cmd.Process.Pid, port)
-
-	// Wait for server to be ready
-	go pm.waitForReady()
-
-	return nil
+	pm.readyCh = make(chan struct{})
+	pm.closingCh = make(chan struct{})
+	pm.startOnce = sync.Once{}
+	pm.pid = 0
+	pm.cmd = nil
 }
 
 func (pm *ProcessManager) waitForReady() {
@@ -87,6 +110,13 @@ func (pm *ProcessManager) waitForReady() {
 	retryInterval := 500 * time.Millisecond
 
 	for i := 0; i < maxRetries; i++ {
+		select {
+		case <-pm.closingCh:
+			log.Println("shutdown requested, stopping readiness check")
+			return
+		default:
+		}
+
 		time.Sleep(retryInterval)
 
 		pm.mu.Lock()
@@ -103,6 +133,7 @@ func (pm *ProcessManager) waitForReady() {
 			resp.Body.Close()
 			if resp.StatusCode == 200 {
 				log.Printf("llama-server is ready on port %d", pm.backendPort())
+				close(pm.readyCh)
 				return
 			}
 		}
@@ -119,6 +150,7 @@ func (pm *ProcessManager) waitForReady() {
 	}
 
 	log.Println("warning: llama-server may not be ready yet")
+	close(pm.readyCh)
 }
 
 func (pm *ProcessManager) Stop() error {
@@ -132,6 +164,9 @@ func (pm *ProcessManager) Stop() error {
 	}
 
 	log.Printf("stopping llama-server (PID %d)", pid)
+
+	// Signal waitForReady to stop polling
+	close(pm.closingCh)
 
 	// Send SIGTERM first for graceful shutdown
 	if pm.cmd != nil && pm.cmd.Process != nil {
@@ -164,4 +199,8 @@ func (pm *ProcessManager) Stop() error {
 
 func (pm *ProcessManager) IsRunning() bool {
 	return atomic.LoadInt32(&pm.pid) != 0
+}
+
+func (pm *ProcessManager) Ready() <-chan struct{} {
+	return pm.readyCh
 }

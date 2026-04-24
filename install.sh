@@ -30,7 +30,7 @@ StandardError=journal
 SyslogIdentifier=llama-router
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 EOF
 
 echo "Reloading systemd..."
