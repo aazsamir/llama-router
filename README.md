@@ -37,9 +37,3 @@ The script build project, then installs the systemd unit, enables it, and starts
 4. If no requests arrive for the TTL duration, the llama-server process is killed, freeing GPU/RAM memory.
 5. On the next request, llama-server is automatically restarted.
 
-## .gitignore
-
-```gitignore
-llama-router
-preset.ini
-```
