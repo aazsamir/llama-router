@@ -68,7 +68,7 @@ func (pm *ProcessManager) Start() error {
 		args := []string{
 			"--models-max", "1",
 			"--models-preset", pm.presetPath,
-			"--host", "127.0.0.1",
+			"--host", "0.0.0.0",
 			"--port", fmt.Sprintf("%d", port),
 			"-np", "1",
 		}

@@ -31,7 +31,7 @@ The script build project, then installs the systemd unit, enables it, and starts
 
 ## How it works
 
-1. Wrapper listens on `--port`, llama-server runs internally on `port+1` (bound to `127.0.0.1`).
+1. Wrapper listens on `--port`, llama-server runs internally on `port+1` (bound to `0.0.0.0`).
 2. All requests are proxied to the backend.
 3. Every incoming request resets the TTL counter.
 4. If no requests arrive for the TTL duration, the llama-server process is killed, freeing GPU/RAM memory.
